@@ -1,0 +1,90 @@
+# =========================
+# OS FILES
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# ENVIRONMENT VARIABLES
+# =========================
+.env
+.env.local
+.env.*.local
+
+# =========================
+# PYTHON (AI/ML)
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Python testing / coverage
+.coverage
+.pytest_cache/
+htmlcov/
+
+# =========================
+# NODE.JS / EXPRESS
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# logs
+logs/
+*.log
+
+# dependency directories
+.pnpm-store/
+
+# =========================
+# REACT VITE
+# =========================
+dist/
+build/
+.vite/
+.cache/
+
+# Vite env files
+.env.development.local
+.env.test.local
+.env.production.local
+
+# =========================
+# IDE / EDITOR
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# DATABASE FILES
+# =========================
+*.sqlite
+*.db
+
+# =========================
+# MISC
+# =========================
+coverage/
+temp/
+tmp/
