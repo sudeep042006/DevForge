@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LayoutDashboard, History as HistoryIcon, FileCode2, GitCompare, Moon, Sun, Monitor, Menu, FolderOpen, Upload, X } from 'lucide-react';
+import { LayoutDashboard, History as HistoryIcon, FileCode2, GitCompare, Moon, Sun, Monitor, Menu, FolderOpen, Upload, X, TerminalSquare, Search, Plus, Trash2, Github } from 'lucide-react';
 import { gsap } from 'gsap';
+import axios from 'axios';
 import Dashboard from '../pages/dashboard';
-import History from '../components/History';
-import DiffViewer from '../components/Diff_Viewer';
-import CodeEditor from '../components/code_Editor';
+import History from './components/History';
+import DiffViewer from './components/Diff_Viewer';
+import CodeEditor from './components/code_Editor';
+import RepoAnalyzer from './components/RepoAnalyzer';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('editor'); // Default to editor for the IDE feel
+  const [activeTab, setActiveTab] = useState('editor'); 
   const [theme, setTheme] = useState('dark');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   
@@ -15,19 +17,39 @@ export default function App() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [importedCode, setImportedCode] = useState(null);
   
+  // Terminal State
+  const [isTerminalOpen, setIsTerminalOpen] = useState(false);
+  const [terminalOutput, setTerminalOutput] = useState([
+     "> DevForge Initialized.",
+     "> Waiting for user commands..."
+  ]);
+  const [terminalInput, setTerminalInput] = useState('');
+
   // Refs for GSAP
   const modalRef = useRef(null);
   const modalOverlayRef = useRef(null);
+  const terminalRef = useRef(null);
 
   // Apply theme to document globally
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
+  // Global Keyboard listener for Ctrl+J (Terminal Toggle)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {
+            e.preventDefault();
+            setIsTerminalOpen(prev => !prev);
+        }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   // GSAP Modal Animations
   useEffect(() => {
     if (isModalOpen) {
-      // Animate In
       gsap.fromTo(modalOverlayRef.current, 
         { opacity: 0 }, 
         { opacity: 1, duration: 0.3, ease: 'power2.out' }
@@ -39,8 +61,42 @@ export default function App() {
     }
   }, [isModalOpen]);
 
+  // GSAP Terminal Slide Animations
+  useEffect(() => {
+    if (isTerminalOpen && terminalRef.current) {
+        gsap.fromTo(terminalRef.current,
+           { height: 0, opacity: 0 },
+           { height: 250, opacity: 1, duration: 0.3, ease: 'power2.out' }
+        );
+    }
+  }, [isTerminalOpen]);
+
+  // Terminal submission handler
+  const handleTerminalSubmit = async (e) => {
+      if (e.key === 'Enter' && terminalInput.trim() !== '') {
+          const command = terminalInput.trim();
+          setTerminalOutput(prev => [...prev, `> ${command}`]);
+          setTerminalInput('');
+
+          // Basic responsive commands mapping to our new backend
+          const cmdParts = command.split(' ');
+          if (cmdParts[0] === 'fetch') {
+              const entity = cmdParts[1] || 'projects';
+              try {
+                  const res = await axios.get(`http://localhost:5000/api/core/${entity}`);
+                  setTerminalOutput(prev => [...prev, `Fetched ${res.data.data.length} ${entity}.`, JSON.stringify(res.data.data, null, 2)]);
+              } catch (err) {
+                  setTerminalOutput(prev => [...prev, `Error: ${err.message}. Endpoints available: projects, codes, repos, plans, solutions, debugs.`]);
+              }
+          } else if (cmdParts[0] === 'clear') {
+              setTerminalOutput([]);
+          } else {
+              setTerminalOutput(prev => [...prev, `Unknown command: ${command}. Try 'fetch projects' or 'clear'.`]);
+          }
+      }
+  };
+
   const closeModal = () => {
-    // Animate Out
     gsap.to(modalRef.current, { 
       y: 30, opacity: 0, scale: 0.95, duration: 0.3, ease: 'power2.in' 
     });
@@ -66,7 +122,7 @@ export default function App() {
       const data = await response.json();
       if (response.ok) {
         setImportedCode(data.codeSnippet);
-        setActiveTab('editor'); // Force switch to editor
+        setActiveTab('editor'); 
         closeModal();
       } else {
         alert(data.error || 'Upload failed');
@@ -80,6 +136,7 @@ export default function App() {
 
   const navigation = [
     { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
+    { id: 'repo', label: 'Repo Analyzer', icon: <Github size={18} /> },
     { id: 'editor', label: 'Code Editor', icon: <FileCode2 size={18} /> },
     { id: 'diff', label: 'Diff Viewer', icon: <GitCompare size={18} /> },
     { id: 'history', label: 'History Logs', icon: <HistoryIcon size={18} /> },
@@ -91,13 +148,13 @@ export default function App() {
     { id: 'white', label: 'Light', icon: <Sun size={14} /> },
   ];
 
-  // Component router mapping
   const renderContent = () => {
     switch(activeTab) {
       case 'dashboard': return <Dashboard />;
+      case 'repo': return <RepoAnalyzer />;
       case 'history': return <History />;
       case 'diff': return <DiffViewer />;
-      case 'editor': return <CodeEditor initialCode={importedCode} onCodeChange={() => setImportedCode(null)} />; // pass initial code
+      case 'editor': return <CodeEditor initialCode={importedCode} onCodeChange={() => setImportedCode(null)} />;
       default: return <CodeEditor />;
     }
   };
@@ -105,7 +162,7 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen w-full bg-bg-primary text-text-primary overflow-hidden font-sans transition-colors duration-300 antialiased selection:bg-accent/30">
       
-      {/* ----------------- TOP MENU BAR (Adobe Style) ----------------- */}
+      {/* ----------------- TOP MENU BAR ----------------- */}
       <header className="h-10 shrink-0 bg-bg-secondary border-b border-border-primary flex items-center px-4 z-30 select-none text-sm">
          <div className="flex items-center gap-2 mr-6 text-accent font-bold tracking-tight">
             <div className="w-5 h-5 rounded bg-accent/20 flex items-center justify-center border border-accent/40">
@@ -115,21 +172,12 @@ export default function App() {
          </div>
          
          <nav className="flex items-center h-full">
-            {/* File Menu Dropdown Trigger (Simplified for now) */}
             <div className="group relative h-full flex items-center px-3 hover:bg-bg-tertiary cursor-pointer transition-colors text-text-secondary hover:text-text-primary">
                <span>File</span>
-               {/* Dropdown content */}
                <div className="absolute top-full left-0 w-48 bg-bg-secondary border border-border-primary shadow-xl rounded-b-lg hidden group-hover:flex flex-col py-1 z-50">
-                  <div 
-                    onClick={() => setIsModalOpen(true)}
-                    className="px-4 py-2 hover:bg-bg-hover flex justify-between items-center text-text-primary"
-                  >
+                  <div onClick={() => setIsModalOpen(true)} className="px-4 py-2 hover:bg-bg-hover flex justify-between items-center text-text-primary">
                      <span>Open File...</span>
                      <span className="text-xs text-text-muted">Ctrl+O</span>
-                  </div>
-                  <div className="px-4 py-2 hover:bg-bg-hover flex justify-between items-center text-text-primary">
-                     <span>Save</span>
-                     <span className="text-xs text-text-muted">Ctrl+S</span>
                   </div>
                   <div className="h-px bg-border-primary my-1 w-full scale-y-50"></div>
                   <div className="px-4 py-2 hover:bg-bg-hover flex justify-between items-center text-rose-500">
@@ -143,12 +191,19 @@ export default function App() {
             <div className="h-full flex items-center px-3 hover:bg-bg-tertiary cursor-pointer transition-colors text-text-secondary hover:text-text-primary">
                <span>View</span>
             </div>
-            <div className="h-full flex items-center px-3 hover:bg-bg-tertiary cursor-pointer transition-colors text-text-secondary hover:text-text-primary">
+            
+            {/* Terminal Toggle Trigger Menu */}
+            <div className="group relative h-full flex items-center px-3 hover:bg-bg-tertiary cursor-pointer transition-colors text-text-secondary hover:text-text-primary">
                <span>Terminal</span>
+               <div className="absolute top-full left-0 w-48 bg-bg-secondary border border-border-primary shadow-xl rounded-b-lg hidden group-hover:flex flex-col py-1 z-50">
+                  <div onClick={() => setIsTerminalOpen(prev => !prev)} className="px-4 py-2 hover:bg-bg-hover flex justify-between items-center text-text-primary">
+                     <span>Toggle Terminal</span>
+                     <span className="text-xs text-text-muted">Ctrl+J</span>
+                  </div>
+               </div>
             </div>
          </nav>
 
-         {/* Theme controls in top right */}
          <div className="ml-auto flex items-center space-x-1">
              {themes.map((t) => (
                <button
@@ -156,9 +211,7 @@ export default function App() {
                  onClick={() => setTheme(t.id)}
                  title={t.label}
                  className={`p-1.5 rounded transition-colors \${
-                   theme === t.id 
-                     ? 'bg-bg-tertiary text-accent' 
-                     : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'
+                   theme === t.id ? 'bg-bg-tertiary text-accent' : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'
                  }`}
                >
                  {t.icon}
@@ -169,7 +222,6 @@ export default function App() {
 
       {/* ----------------- MAIN LAYOUT ----------------- */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Sidebar Navigation (Slimmer, professional) */}
         <aside className={`\${isSidebarOpen ? 'w-56' : 'w-14'} shrink-0 flex flex-col bg-bg-secondary border-r border-border-primary transition-all duration-300 relative z-20`}>
           <div className="h-12 flex items-center justify-between px-3 border-b border-border-primary/50">
             {isSidebarOpen && <span className="font-semibold text-xs text-text-muted uppercase tracking-widest pl-1">Explorer</span>}
@@ -207,12 +259,66 @@ export default function App() {
           </nav>
         </aside>
 
-        {/* Content Area */}
-        <main className="flex-1 overflow-hidden relative bg-bg-primary custom-scrollbar z-10">
-          {/* subtle glass background glow removed for a cleaner professional IDE look, replaced with pure utilitarian background */}
-          <div className="relative z-10 h-full overflow-hidden flex flex-col bg-bg-primary">
+        <main className="flex-1 overflow-hidden relative bg-bg-primary custom-scrollbar z-10 flex flex-col">
+          <div className="flex-1 relative z-10 h-full overflow-hidden flex flex-col bg-bg-primary">
             {renderContent()}
           </div>
+          
+          {/* ----------------- TERMINAL PANEL (Slide up/down) ----------------- */}
+          {isTerminalOpen && (
+              <div 
+                ref={terminalRef}
+                className="shrink-0 bg-[#0d0d0d] border-t border-border-primary flex flex-col will-change-transform z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]"
+                style={{ height: '250px' }}
+              >
+                 {/* Terminal Header */}
+                 <div className="h-9 shrink-0 flex items-center justify-between px-4 border-b border-[#222]">
+                    <div className="flex space-x-4 h-full">
+                       <button className="h-full px-2 text-xs font-semibold text-text-primary border-b-2 border-accent transition-colors flex items-center gap-2 uppercase tracking-wide">
+                          <TerminalSquare size={14} className="text-accent" /> Terminal
+                       </button>
+                       <button className="h-full px-2 text-xs font-semibold text-text-muted hover:text-text-primary transition-colors flex items-center gap-2 uppercase tracking-wide">
+                          Output
+                       </button>
+                       <button className="h-full px-2 text-xs font-semibold text-text-muted hover:text-text-primary transition-colors flex items-center gap-2 uppercase tracking-wide">
+                          Debug Console
+                       </button>
+                    </div>
+                    <div className="flex space-x-1">
+                        <button className="p-1 hover:bg-[#222] rounded text-text-muted hover:text-text-primary transition-colors">
+                            <Plus size={14} />
+                        </button>
+                        <button onClick={() => setTerminalOutput([])} className="p-1 hover:bg-[#222] rounded text-text-muted hover:text-text-primary transition-colors" title="Clear Panel">
+                            <Trash2 size={14} />
+                        </button>
+                        <button onClick={() => setIsTerminalOpen(false)} className="p-1 hover:bg-[#222] rounded text-text-muted hover:text-text-primary transition-colors ml-2">
+                            <X size={14} />
+                        </button>
+                    </div>
+                 </div>
+
+                 {/* Terminal Content Area */}
+                 <div className="flex-1 overflow-y-auto p-4 font-mono text-sm leading-relaxed custom-scrollbar bg-[#0d0d0d]">
+                    {terminalOutput.map((line, idx) => (
+                        <div key={idx} className={`${line.includes('Error') ? 'text-rose-400' : line.includes('Fetched') ? 'text-emerald-400' : 'text-zinc-300'}`}>
+                           {line}
+                        </div>
+                    ))}
+                    <div className="flex items-center text-zinc-300 mt-1">
+                       <span className="text-emerald-500 mr-2 font-bold">PS D:\RSOC\DevForge&gt;</span>
+                       <input 
+                          type="text" 
+                          className="flex-1 bg-transparent border-none outline-none focus:ring-0 text-zinc-300 shadow-none font-mono placeholder:text-zinc-600"
+                          value={terminalInput}
+                          onChange={(e) => setTerminalInput(e.target.value)}
+                          onKeyDown={handleTerminalSubmit}
+                          placeholder="Type 'fetch projects'..."
+                          autoFocus
+                       />
+                    </div>
+                 </div>
+              </div>
+          )}
         </main>
       </div>
 
@@ -220,13 +326,12 @@ export default function App() {
       {isModalOpen && (
         <div 
           ref={modalOverlayRef}
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 border-none"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
         >
           <div 
             ref={modalRef}
             className="bg-bg-secondary border border-border-primary shadow-2xl rounded-xl w-full max-w-lg overflow-hidden flex flex-col will-change-transform"
           >
-            {/* Modal Header */}
             <div className="px-6 py-4 border-b border-border-primary flex justify-between items-center bg-bg-tertiary">
                <h3 className="text-lg font-bold text-text-primary flex items-center gap-2">
                  <FolderOpen size={20} className="text-accent" /> Import Code File
@@ -236,7 +341,6 @@ export default function App() {
                </button>
             </div>
             
-            {/* Modal Body */}
             <div className="p-8">
                <label 
                  htmlFor="file-upload" 
@@ -253,18 +357,12 @@ export default function App() {
                         .JS, .PY, .TS, .JSX, .HTML
                      </p>
                   </div>
-                  <input 
-                    id="file-upload" 
-                    type="file" 
-                    className="hidden" 
-                    onChange={handleFileUpload}
-                  />
+                  <input id="file-upload" type="file" className="hidden" onChange={handleFileUpload} />
                </label>
             </div>
           </div>
         </div>
       )}
-
     </div>
   );
 }

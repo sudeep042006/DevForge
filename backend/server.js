@@ -23,9 +23,11 @@ app.get('/', (req, res) => {
 // We will mount your actual routes here later
 import scanRoutes from './routes/scanRoutes.js';
 import analyzeRoutes from './routes/analyze.js';
+import coreRoutes from './routes/coreRoutes.js';
 
 app.use('/api/scans', scanRoutes);
 app.use('/api/analyze', analyzeRoutes); // Mount file upload endpoints
+app.use('/api/core', coreRoutes); // Mount generic CRUD endpoints
 
 const PORT = process.env.PORT || 5000;
 

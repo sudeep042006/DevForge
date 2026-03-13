@@ -89,7 +89,7 @@ def analyze_code():
             {code}
             ```
             """
-            genai_model = genai.GenerativeModel('gemini-1.5-pro')
+            genai_model = genai.GenerativeModel('gemini-1.5-flash')
             response = genai_model.generate_content(prompt)
             response_text = response.text.strip()
             
@@ -115,6 +115,92 @@ def analyze_code():
         "riskScore": round(risk_score, 2),
         "detectedBugs": detected_bugs,
         "aiSuggestedFixes": ai_suggested_fixes
+    })
+
+@app.route('/analyze_repo', methods=['POST'])
+def analyze_repo():
+    data = request.json
+    if not data or 'repoUrl' not in data:
+        return jsonify({"error": "Missing 'repoUrl' in request body"}), 400
+    
+    repo_url = data.get('repoUrl', '')
+    file_tree = data.get('fileTree', [])
+    readme_content = data.get('readmeContent', '')
+    
+    summary = {
+        "projectExplanation": "Analysis disabled due to missing API key.",
+        "mainModules": "Unknown"
+    }
+
+    if gemini_api_key:
+        try:
+            # Shorten tree to avoid token limits
+            tree_str = str(file_tree)[:3000]
+            
+            prompt = f"""
+            Analyze the following GitHub repository information.
+            Repository URL: {repo_url}
+            
+            README excerpt:
+            {readme_content[:1500]}
+            
+            File Tree excerpt:
+            {tree_str}
+            
+            Return a JSON object strictly following this structure:
+            {{
+                "projectExplanation": "A 2-3 sentence overview of what this project does.",
+                "mainModules": "A short list or comma separated string of the main modules/components based on the tree."
+            }}
+            """
+            genai_model = genai.GenerativeModel('gemini-1.5-flash')
+            response = genai_model.generate_content(prompt)
+            response_text = response.text.strip()
+            
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            
+            import json
+            llm_results = json.loads(response_text)
+            
+            summary = {
+                "projectExplanation": llm_results.get("projectExplanation", "Could not determine project explanation."),
+                "mainModules": llm_results.get("mainModules", "Could not determine main modules/components.")
+            }
+        except Exception as e:
+            print(f"Error calling LLM for repo: {e}")
+            summary = {
+                "projectExplanation": f"Error during analysis: {str(e)}",
+                "mainModules": "Error"
+            }
+            
+    return jsonify({
+        "summary": summary
+    })
+
+
+@app.route('/analyze_architecture', methods=['POST'])
+def analyze_architecture():
+    data = request.json
+    if not data or 'localPath' not in data:
+        return jsonify({"error": "Missing 'localPath' in request body"}), 400
+        
+    local_path = data.get('localPath')
+    
+    if not os.path.exists(local_path):
+        return jsonify({"error": "Repository path not found. Ensure it was cloned."}), 404
+        
+    try:
+        from analysis.dependency_graph import generate_mermaid_graph
+        mermaid_diagram = generate_mermaid_graph(local_path)
+    except Exception as e:
+        print(f"Error generating diagram: {e}")
+        mermaid_diagram = "graph TD\n    Error[Error generating dependency graph]"
+        
+    return jsonify({
+        "mermaidGraph": mermaid_diagram
     })
 
 if __name__ == '__main__':
