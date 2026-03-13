@@ -4,6 +4,7 @@ import pickle
 import joblib
 import os
 import json
+import sys
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -12,6 +13,17 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
+
+# ---------------------------------------------------------------
+# Import local static analyzer
+# ---------------------------------------------------------------
+sys.path.insert(0, os.path.dirname(__file__))
+try:
+    from intelligence.static_analyzer import analyze_code as static_analyze
+    print("✅ Static analyzer loaded.")
+except ImportError as e:
+    print(f"⚠️ Static analyzer not available: {e}")
+    static_analyze = None
 
 # ---------------------------------------------------------------
 # Configure DeepSeek client (OpenAI-compatible API)
@@ -43,6 +55,23 @@ try:
 except Exception:
     print(f"⚠️ Warning: Could not load trained model at {MODEL_PATH}. Using mock predictions.")
     model = None
+
+# ---------------------------------------------------------------
+# Bug Detector ML Model loading
+# ---------------------------------------------------------------
+BUG_DETECTOR_PATH = os.path.join(os.path.dirname(__file__), "bug_detector.pkl")
+bug_detector_model = None
+bug_detector_features = None
+
+try:
+    with open(BUG_DETECTOR_PATH, "rb") as f:
+        loaded = pickle.load(f)
+        bug_detector_model = loaded['model']
+        bug_detector_features = loaded['feature_keys']
+    print("✅ Bug detector model loaded.")
+except Exception as e:
+    print(f"⚠️ Bug detector model not available: {e}")
+    print("   Run: python datasets/bug_patterns_dataset.py && python models/bug_detector_model.py")
 
 # ---------------------------------------------------------------
 # Helper: run a DeepSeek prompt and return the text
@@ -124,13 +153,21 @@ def health_check():
 
 @app.route('/analyze_code', methods=['POST'])
 def analyze_code():
-    """Analyze a single code snippet for bugs and fixes."""
+    """Analyze a single code snippet for bugs and fixes.
+    Accepts optional 'mode' parameter: 'api' (default) or 'local'.
+    """
     data = request.json
     if not data or 'codeSnippet' not in data:
         return jsonify({"error": "Missing 'codeSnippet' in request body"}), 400
 
     code = data['codeSnippet']
+    mode = data.get('mode', 'api')  # 'api' or 'local'
 
+    # If mode is 'local', use local model + static analyzer
+    if mode == 'local':
+        return _analyze_local(code)
+
+    # Original API-based flow
     # Step 1: Risk score
     risk_score = 0.0
     if model is not None:
@@ -180,6 +217,98 @@ Code:
         "detectedBugs": detected_bugs,
         "aiSuggestedFixes": ai_suggested_fixes
     })
+
+
+def _extract_features_for_prediction(code: str) -> list:
+    """Extract feature vector compatible with the bug detector model."""
+    lines = code.strip().split('\n')
+    features = {
+        'line_count': len(lines),
+        'has_eval': 1 if 'eval(' in code else 0,
+        'has_exec': 1 if 'exec(' in code else 0,
+        'has_try_except': 1 if 'try:' in code and 'except' in code else 0,
+        'has_bare_except': 1 if 'except:' in code else 0,
+        'has_nested_loops': 1 if code.count('for ') >= 2 or code.count('while ') >= 2 else 0,
+        'has_input': 1 if 'input(' in code else 0,
+        'has_open_file': 1 if 'open(' in code else 0,
+        'has_return': 1 if 'return ' in code else 0,
+        'has_class': 1 if 'class ' in code else 0,
+        'has_import': 1 if 'import ' in code else 0,
+        'has_type_hints': 1 if '->' in code or ': ' in code else 0,
+        'has_hardcoded_password': 1 if any(kw in code.lower() for kw in ['password', 'secret', 'api_key']) else 0,
+        'has_string_concat_loop': 1 if '+=' in code and ('for ' in code or 'while ' in code) else 0,
+        'has_sql_string': 1 if 'SELECT' in code or 'INSERT' in code or 'DELETE' in code else 0,
+        'has_pickle_load': 1 if 'pickle.load' in code else 0,
+        'avg_line_length': sum(len(l) for l in lines) / max(len(lines), 1),
+        'max_indent': max((len(l) - len(l.lstrip())) for l in lines) if lines else 0,
+        'comment_ratio': sum(1 for l in lines if l.strip().startswith('#')) / max(len(lines), 1),
+    }
+    if bug_detector_features:
+        return [features.get(k, 0) for k in bug_detector_features]
+    return list(features.values())
+
+
+def _analyze_local(code: str):
+    """Analyze code using local model + static analyzer (no API calls)."""
+    detected_bugs = []
+    ai_suggested_fixes = []
+    risk_score = 25.0  # Base risk
+
+    # Part 1: Static analysis (AST-based)
+    if static_analyze:
+        try:
+            static_result = static_analyze(code)
+            detected_bugs.extend(static_result.get('bugs', []))
+            ai_suggested_fixes.extend(static_result.get('fixes', []))
+        except Exception as e:
+            print(f"Static analyzer error: {e}")
+
+    # Part 2: ML model prediction
+    if bug_detector_model:
+        try:
+            features = _extract_features_for_prediction(code)
+            import numpy as np
+            prediction = bug_detector_model.predict([features])[0]
+            probability = bug_detector_model.predict_proba([features])[0]
+            risk_score = round(float(probability[1]) * 100, 2)  # probability of being buggy
+
+            if prediction == 1 and not detected_bugs:
+                detected_bugs.append({
+                    'bugType': 'ML-Detected',
+                    'description': f'ML model flagged this code as potentially buggy (confidence: {risk_score}%). Review the code for common issues like missing error handling, unsafe operations, or logical flaws.',
+                    'lineNumbers': []
+                })
+        except Exception as e:
+            print(f"ML model prediction error: {e}")
+            risk_score = 50.0
+    else:
+        # Fallback risk calculation
+        risk_score = min(max(len(detected_bugs) * 15 + 10, 15.0), 98.0)
+
+    # If no bugs found at all, report clean
+    if not detected_bugs:
+        detected_bugs.append({
+            'bugType': 'Clean',
+            'description': 'No issues detected by local static analysis and ML model. Code looks good!',
+            'lineNumbers': []
+        })
+        risk_score = max(risk_score, 5.0)
+
+    return jsonify({
+        "riskScore": round(risk_score, 2),
+        "detectedBugs": detected_bugs,
+        "aiSuggestedFixes": ai_suggested_fixes,
+        "analysisMode": "local"
+    })
+
+
+@app.route('/analyze_code_local', methods=['POST'])
+def analyze_code_local():
+    """Dedicated endpoint for local-only analysis (no API calls)."""
+    data = request.json
+    if not data or 'codeSnippet' not in data:
+        return jsonify({"error": "Missing 'codeSnippet' in request body"}), 400
+    return _analyze_local(data['codeSnippet'])
 
 
 @app.route('/analyze_repo', methods=['POST'])

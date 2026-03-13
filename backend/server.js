@@ -25,11 +25,13 @@ import scanRoutes from './routes/scanRoutes.js';
 import analyzeRoutes from './routes/analyze.js';
 import coreRoutes from './routes/coreRoutes.js';
 import historyRoutes from './routes/history.js';
+import terminalRoutes from './routes/terminalRoutes.js';
 
 app.use('/api/scans', scanRoutes);
 app.use('/api/analyze', analyzeRoutes); // Mount file upload endpoints
 app.use('/api/core', coreRoutes); // Mount generic CRUD endpoints
 app.use('/api/history', historyRoutes); // Repo analysis history
+app.use('/api/terminal', terminalRoutes); // Terminal command execution
 
 const PORT = process.env.PORT || 5000;
 

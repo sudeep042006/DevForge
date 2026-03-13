@@ -4,13 +4,13 @@ import ScanRecord from '../models/ScanRecord.js';
 // Controller to handle code analysis logic
 export const analyzeCodeSnippet = async (req, res) => {
     try {
-        const { codeSnippet, fileName = 'untitled.js' } = req.body;
+        const { codeSnippet, fileName = 'untitled.js', analysisMode = 'api' } = req.body;
 
         if (!codeSnippet) {
             return res.status(400).json({ error: 'Code snippet is required' });
         }
 
-        console.log(`[Node.js] Received scan request for ${fileName}`);
+        console.log(`[Node.js] Received scan request for ${fileName} (mode: ${analysisMode})`);
 
         // 1. Save initially to MongoDB (Mark as processing)
         const newRecord = await ScanRecord.create({
@@ -29,7 +29,8 @@ export const analyzeCodeSnippet = async (req, res) => {
         console.log(`[Node.js] Forwarding payload to Flask Microservice at ${flaskApiUrl}/analyze_code`);
         
         const flaskResponse = await axios.post(`${flaskApiUrl}/analyze_code`, {
-            codeSnippet
+            codeSnippet,
+            mode: analysisMode  // 'api' or 'local'
         });
 
         const { riskScore, detectedBugs, aiSuggestedFixes } = flaskResponse.data;

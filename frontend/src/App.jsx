@@ -78,7 +78,25 @@ export default function App() {
           setTerminalOutput(prev => [...prev, `> ${command}`]);
           setTerminalInput('');
 
-          // Basic responsive commands mapping to our new backend
+          // Built-in client-side commands
+          if (command === 'clear') {
+              setTerminalOutput([]);
+              return;
+          }
+
+          if (command === 'help') {
+              setTerminalOutput(prev => [...prev, 
+                'Available commands:',
+                '  clear        - Clear terminal',
+                '  help         - Show this help',
+                '  fetch <entity> - Fetch from API (projects, codes, repos, plans, solutions, debugs)',
+                '  Any other command is executed as a shell command on the server',
+                '  Examples: echo hello, dir, node -v, python --version'
+              ]);
+              return;
+          }
+
+          // Handle 'fetch' command via API
           const cmdParts = command.split(' ');
           if (cmdParts[0] === 'fetch') {
               const entity = cmdParts[1] || 'projects';
@@ -88,10 +106,35 @@ export default function App() {
               } catch (err) {
                   setTerminalOutput(prev => [...prev, `Error: ${err.message}. Endpoints available: projects, codes, repos, plans, solutions, debugs.`]);
               }
-          } else if (cmdParts[0] === 'clear') {
-              setTerminalOutput([]);
-          } else {
-              setTerminalOutput(prev => [...prev, `Unknown command: ${command}. Try 'fetch projects' or 'clear'.`]);
+              return;
+          }
+
+          // Execute real shell command via backend
+          try {
+              const res = await axios.post('http://localhost:5000/api/terminal/execute', {
+                  command: command,
+                  cwd: 'D:\\RSOC'
+              });
+              
+              const { output, stderr, exitCode } = res.data;
+              
+              if (output && output.trim()) {
+                  // Split output into lines for proper display
+                  output.trim().split('\n').forEach(line => {
+                      setTerminalOutput(prev => [...prev, line]);
+                  });
+              }
+              if (stderr && stderr.trim()) {
+                  stderr.trim().split('\n').forEach(line => {
+                      setTerminalOutput(prev => [...prev, `Error: ${line}`]);
+                  });
+              }
+              if (exitCode && exitCode !== 0) {
+                  setTerminalOutput(prev => [...prev, `Process exited with code ${exitCode}`]);
+              }
+          } catch (err) {
+              const errorMsg = err.response?.data?.error || err.message;
+              setTerminalOutput(prev => [...prev, `Error: ${errorMsg}`]);
           }
       }
   };
