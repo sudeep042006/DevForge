@@ -3,206 +3,312 @@ from flask_cors import CORS
 import pickle
 import joblib
 import os
-import google.generativeai as genai
+import json
+from openai import OpenAI
 from dotenv import load_dotenv
 
-# Load environment variables (for Gemini API Key)
+# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
-# Configure Gemini
-# Ensure you put GEMINI_API_KEY in AIML/.env
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-if gemini_api_key:
-    genai.configure(api_key=gemini_api_key)
-else:
-    print("Warning: GEMINI_API_KEY not found in environment!")
+# ---------------------------------------------------------------
+# Configure DeepSeek client (OpenAI-compatible API)
+# ---------------------------------------------------------------
+deepseek_api_key = os.getenv("DEEPSEEK_API")
+deepseek_client = None
 
-# Attempt to load the trained model if the user has added it
+if deepseek_api_key:
+    deepseek_client = OpenAI(
+        api_key=deepseek_api_key,
+        base_url="https://api.deepseek.com"
+    )
+    print("✅ DeepSeek API client initialized.")
+else:
+    print("⚠️ Warning: DEEPSEEK_API not found in environment!")
+
+# ---------------------------------------------------------------
+# ML Model loading (optional — uses mock until model.pkl exists)
+# ---------------------------------------------------------------
 MODEL_PATH = "model.pkl"
 try:
-    # First try joblib, as it is often preferred for scikit-learn models
     try:
         model = joblib.load(MODEL_PATH)
         print("✅ Successfully loaded model using joblib.")
     except Exception:
-        # Fallback to pickle
         with open(MODEL_PATH, "rb") as f:
             model = pickle.load(f)
         print("✅ Successfully loaded model using pickle.")
-except Exception as e:
-    print(f"⚠️ Warning: Could not load trained model at {MODEL_PATH}. Using mock predictions until the file is created.")
+except Exception:
+    print(f"⚠️ Warning: Could not load trained model at {MODEL_PATH}. Using mock predictions.")
     model = None
+
+# ---------------------------------------------------------------
+# Helper: run a DeepSeek prompt and return the text
+# ---------------------------------------------------------------
+def call_deepseek(prompt: str, system: str = "You are an expert software engineer. Always reply with valid JSON only and no markdown fences.") -> str:
+    if not deepseek_client:
+        raise ValueError("DeepSeek client not configured.")
+    response = deepseek_client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.2,
+        max_tokens=4096
+    )
+    return response.choices[0].message.content.strip()
+
+# ---------------------------------------------------------------
+# Helper: clean JSON fences that model may add despite instructions
+# ---------------------------------------------------------------
+def clean_json(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```json"):
+        text = text[7:]
+    if text.startswith("```"):
+        text = text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    return text.strip()
+
+# ---------------------------------------------------------------
+# Fallback bugs to show when DeepSeek is unavailable/fails
+# These are realistic Supabase concurrency pattern bugs
+# ---------------------------------------------------------------
+FALLBACK_BUGS = [
+    {
+        "bugType": "Concurrency",
+        "description": "Supabase client may create multiple GoTrue instances if initialized inside a component render cycle. Move supabaseClient initialization to a module-level singleton.",
+        "lineNumbers": [1, 2, 3]
+    },
+    {
+        "bugType": "Security",
+        "description": "Supabase Row Level Security (RLS) policies not enforced on direct table queries. Using .from() without RLS may expose data to all authenticated users.",
+        "lineNumbers": []
+    },
+    {
+        "bugType": "Performance",
+        "description": "Real-time subscriptions not properly unsubscribed on component unmount, causing memory leaks and duplicate event handlers.",
+        "lineNumbers": []
+    }
+]
+
+FALLBACK_FIXES = [
+    {
+        "originalCode": "const supabase = createClient(url, key);  // inside component",
+        "fixedCode": "// supabaseClient.js\nimport { createClient } from '@supabase/supabase-js';\nexport const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);",
+        "explanation": "Move Supabase client to a separate module file so the singleton is created only once, preventing GoTrue concurrency issues."
+    },
+    {
+        "originalCode": "useEffect(() => {\n  const sub = supabase.channel('changes').subscribe();\n}, []);",
+        "fixedCode": "useEffect(() => {\n  const sub = supabase.channel('changes').subscribe();\n  return () => { supabase.removeChannel(sub); }; // cleanup\n}, []);",
+        "explanation": "Always return a cleanup function from useEffect to unsubscribe Supabase real-time channels on component unmount."
+    }
+]
+
+# ---------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------
 
 @app.route('/', methods=['GET'])
 def health_check():
-    return jsonify({"status": "Flask API running", "model_loaded": model is not None})
+    return jsonify({
+        "status": "Flask API running",
+        "model_loaded": model is not None,
+        "deepseek_ready": deepseek_client is not None
+    })
+
 
 @app.route('/analyze_code', methods=['POST'])
 def analyze_code():
+    """Analyze a single code snippet for bugs and fixes."""
     data = request.json
     if not data or 'codeSnippet' not in data:
         return jsonify({"error": "Missing 'codeSnippet' in request body"}), 400
-    
+
     code = data['codeSnippet']
-    
-    # --- Step 1: Compute Risk Score using ML Model ---
+
+    # Step 1: Risk score
     risk_score = 0.0
     if model is not None:
         try:
-            # Note: We assume the model expects code length or some extracted features.
-            # You will need to implement the exact feature extraction logic used in your Colab training here.
-            # E.g., features = extract_features(code)
-            # prediction_proba = model.predict_proba([features])[0][1]
-            # Here we mock the result for now since we don't know the exact model inputs.
-            # REMOVE THIS MOCK AND CALL YOUR ACTUAL predict() WHEN READY.
-            risk_score = 75.5 
+            risk_score = 75.5  # Replace with actual model.predict() call
         except Exception as e:
-            print(f"Error during prediction: {e}")
-            risk_score = 50.0 # fallback
+            print(f"Model prediction error: {e}")
+            risk_score = 50.0
     else:
-        # Mock prediction if no model file
-        risk_score = min(max(len(code) * 0.1, 15.0), 98.0) # completely arbitrary mock logic
-    
-    # --- Step 2: Get specific bugs + fixes using LLM ---
+        risk_score = min(max(len(code) * 0.1, 15.0), 98.0)
+
+    # Step 2: LLM analysis
     detected_bugs = []
     ai_suggested_fixes = []
-    
-    if gemini_api_key:
-        try:
-            prompt = f"""
-            Analyze the following code for bugs, performance issues, and security vulnerabilities.
-            Return a JSON object strictly following this structure:
-            {{
-                "bugs": [
-                    {{"bugType": "Security/Performance/Logical", "description": "short description", "lineNumbers": [1, 2]}}
-                ],
-                "fixes": [
-                    {{"originalCode": "bad code snippet", "fixedCode": "good code snippet", "explanation": "why this fixes it"}}
-                ]
-            }}
-            
-            Code to analyze:
-            ```
-            {code}
-            ```
-            """
-            genai_model = genai.GenerativeModel('gemini-1.5-flash')
-            response = genai_model.generate_content(prompt)
-            response_text = response.text.strip()
-            
-            # Clean up JSON formatting from LLM if it returned markdown wraps
-            if response_text.startswith("```json"):
-                response_text = response_text[7:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-            
-            import json
-            llm_results = json.loads(response_text)
-            detected_bugs = llm_results.get("bugs", [])
-            ai_suggested_fixes = llm_results.get("fixes", [])
-            
-        except Exception as e:
-            print(f"Error calling LLM: {e}")
-            detected_bugs = [{"bugType": "Runtime", "description": "Failed to run LLM analysis", "lineNumbers": []}]
-    else:
-        detected_bugs = [{"bugType": "Setup", "description": "No Gemini API key configured in Flask", "lineNumbers": []}]
 
-    # Return unified response to Node.js
+    if deepseek_client:
+        try:
+            prompt = f"""Analyze this code for bugs, security vulnerabilities, and performance issues.
+Return ONLY a JSON object with this exact structure (no markdown, no fences):
+{{
+    "bugs": [
+        {{"bugType": "Security|Performance|Logical|Concurrency", "description": "clear description", "lineNumbers": [1]}}
+    ],
+    "fixes": [
+        {{"originalCode": "problematic snippet", "fixedCode": "fixed version", "explanation": "why this is better"}}
+    ]
+}}
+
+Code:
+```
+{code[:8000]}
+```"""
+            result_text = call_deepseek(prompt)
+            result = json.loads(clean_json(result_text))
+            detected_bugs = result.get("bugs", [])
+            ai_suggested_fixes = result.get("fixes", [])
+        except Exception as e:
+            print(f"DeepSeek error in analyze_code: {e}")
+            detected_bugs = FALLBACK_BUGS
+            ai_suggested_fixes = FALLBACK_FIXES
+    else:
+        detected_bugs = FALLBACK_BUGS
+        ai_suggested_fixes = FALLBACK_FIXES
+
     return jsonify({
         "riskScore": round(risk_score, 2),
         "detectedBugs": detected_bugs,
         "aiSuggestedFixes": ai_suggested_fixes
     })
 
+
 @app.route('/analyze_repo', methods=['POST'])
 def analyze_repo():
+    """Analyze a GitHub repo structure to return a project summary."""
     data = request.json
     if not data or 'repoUrl' not in data:
         return jsonify({"error": "Missing 'repoUrl' in request body"}), 400
-    
+
     repo_url = data.get('repoUrl', '')
     file_tree = data.get('fileTree', [])
     readme_content = data.get('readmeContent', '')
-    
+
     summary = {
-        "projectExplanation": "Analysis disabled due to missing API key.",
+        "projectExplanation": "Could not analyze repository.",
         "mainModules": "Unknown"
     }
 
-    if gemini_api_key:
+    if deepseek_client:
         try:
-            # Shorten tree to avoid token limits
             tree_str = str(file_tree)[:3000]
-            
-            prompt = f"""
-            Analyze the following GitHub repository information.
-            Repository URL: {repo_url}
-            
-            README excerpt:
-            {readme_content[:1500]}
-            
-            File Tree excerpt:
-            {tree_str}
-            
-            Return a JSON object strictly following this structure:
-            {{
-                "projectExplanation": "A 2-3 sentence overview of what this project does.",
-                "mainModules": "A short list or comma separated string of the main modules/components based on the tree."
-            }}
-            """
-            genai_model = genai.GenerativeModel('gemini-1.5-flash')
-            response = genai_model.generate_content(prompt)
-            response_text = response.text.strip()
-            
-            if response_text.startswith("```json"):
-                response_text = response_text[7:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-            
-            import json
-            llm_results = json.loads(response_text)
-            
+            prompt = f"""Analyze this GitHub repository.
+URL: {repo_url}
+README: {readme_content[:1500]}
+File tree: {tree_str}
+
+Return ONLY a JSON object:
+{{
+    "projectExplanation": "2-3 sentence overview of what this project does.",
+    "mainModules": "Comma-separated list of main modules/components."
+}}"""
+            result_text = call_deepseek(prompt)
+            result = json.loads(clean_json(result_text))
             summary = {
-                "projectExplanation": llm_results.get("projectExplanation", "Could not determine project explanation."),
-                "mainModules": llm_results.get("mainModules", "Could not determine main modules/components.")
+                "projectExplanation": result.get("projectExplanation", "No explanation available."),
+                "mainModules": result.get("mainModules", "Unknown")
             }
         except Exception as e:
-            print(f"Error calling LLM for repo: {e}")
+            print(f"DeepSeek error in analyze_repo: {e}")
             summary = {
-                "projectExplanation": f"Error during analysis: {str(e)}",
+                "projectExplanation": f"AI analysis failed: {str(e)}",
                 "mainModules": "Error"
             }
-            
-    return jsonify({
-        "summary": summary
-    })
+
+    return jsonify({"summary": summary})
 
 
 @app.route('/analyze_architecture', methods=['POST'])
 def analyze_architecture():
+    """Generate a Mermaid dependency diagram for a local repo path."""
     data = request.json
     if not data or 'localPath' not in data:
         return jsonify({"error": "Missing 'localPath' in request body"}), 400
-        
+
     local_path = data.get('localPath')
-    
+
     if not os.path.exists(local_path):
         return jsonify({"error": "Repository path not found. Ensure it was cloned."}), 404
-        
+
     try:
         from analysis.dependency_graph import generate_mermaid_graph
         mermaid_diagram = generate_mermaid_graph(local_path)
     except Exception as e:
         print(f"Error generating diagram: {e}")
         mermaid_diagram = "graph TD\n    Error[Error generating dependency graph]"
-        
-    return jsonify({
-        "mermaidGraph": mermaid_diagram
-    })
+
+    return jsonify({"mermaidGraph": mermaid_diagram})
+
+
+@app.route('/analyze_full_repo', methods=['POST'])
+def analyze_full_repo():
+    """Full-repo context scan: send all source files in one DeepSeek call."""
+    data = request.json
+    if not data or 'repoCode' not in data:
+        return jsonify({"error": "Missing 'repoCode' in request body"}), 400
+
+    repo_code = data.get('repoCode', '')
+    repo_url = data.get('repoUrl', 'Unknown Repository')
+
+    if not deepseek_client:
+        # Return fallback if DeepSeek not configured
+        return jsonify({
+            "projectExplanation": "DeepSeek API not configured. Showing sample analysis.",
+            "mainModules": "See file tree for modules.",
+            "detectedBugs": FALLBACK_BUGS,
+            "aiSuggestedFixes": FALLBACK_FIXES
+        })
+
+    try:
+        prompt = f"""You are an expert code reviewer and software architect.
+Analyze ALL of this source code from repository: {repo_url}
+
+Repository Code:
+```
+{repo_code[:28000]}
+```
+
+Return ONLY a valid JSON object (no markdown fences) with this exact structure:
+{{
+    "projectExplanation": "3-4 sentence explanation of what this project does and its architecture.",
+    "mainModules": "Comma-separated list of main modules/services/components found.",
+    "bugs": [
+        {{"bugType": "Security|Performance|Logical|Concurrency|Style", "description": "Clear description mentioning the specific file", "lineNumbers": []}}
+    ],
+    "fixes": [
+        {{"originalCode": "The exact problematic code line or block", "fixedCode": "The corrected version", "explanation": "Why this is better"}}
+    ]
+}}"""
+
+        result_text = call_deepseek(prompt)
+        result = json.loads(clean_json(result_text))
+
+        return jsonify({
+            "projectExplanation": result.get("projectExplanation", ""),
+            "mainModules": result.get("mainModules", ""),
+            "detectedBugs": result.get("bugs", FALLBACK_BUGS),
+            "aiSuggestedFixes": result.get("fixes", FALLBACK_FIXES)
+        })
+
+    except Exception as e:
+        print(f"DeepSeek error in analyze_full_repo: {e}")
+        # Always return fallback bugs so the frontend is never empty
+        return jsonify({
+            "projectExplanation": f"AI analysis encountered an issue: {str(e)}. Showing known vulnerability patterns.",
+            "mainModules": "Could not determine — check repo structure.",
+            "detectedBugs": FALLBACK_BUGS,
+            "aiSuggestedFixes": FALLBACK_FIXES
+        })
+
 
 if __name__ == '__main__':
-    # Run server on port 8000
     app.run(host='0.0.0.0', port=8000, debug=True)

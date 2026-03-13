@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import fs from 'fs';
 import { analyzeCodeSnippet } from '../controllers/scanController.js';
+import RepoHistory from '../models/RepoHistory.js';
 
 const router = express.Router();
 
@@ -109,6 +110,22 @@ router.post('/repo', async (req, res) => {
             console.error('[Node.js] Error calling AIML engine for architecture:', error);
         }
 
+        // 5. Save to MongoDB history (non-blocking - don't fail the response if this fails)
+        try {
+            await RepoHistory.create({
+                repoUrl,
+                owner,
+                repoName,
+                aiSummary: aiSummary || {},
+                architectureDiagram,
+                filesCount: fileTree.length,
+                status: 'success'
+            });
+            console.log('[Node.js] Repo analysis saved to history.');
+        } catch (dbErr) {
+            console.error('[Node.js] Failed to save to RepoHistory:', dbErr.message);
+        }
+
         return res.status(200).json({
             message: 'Repository cloned and analyzed',
             repoUrl,
@@ -125,7 +142,7 @@ router.post('/repo', async (req, res) => {
     }
 });
 
-// Endpoint to handle deep bug scanning for an entire cloned repository
+// Endpoint to handle deep bug scanning for an entire cloned repository (full context, single Gemini call)
 router.post('/repo-bugs', async (req, res) => {
     try {
         const { localPath, repoUrl } = req.body;
@@ -136,71 +153,61 @@ router.post('/repo-bugs', async (req, res) => {
         const { getSourceFiles } = await import('../services/repoService.js');
         const ScanRecord = (await import('../models/ScanRecord.js')).default;
         
-        // 1. Gather Source Files (Cap at 5 to prevent massive LLM payloads/timeouts)
-        const filesToScan = getSourceFiles(localPath, 5);
+        // 1. Gather ALL useful source files (more context = better AI suggestions)
+        const filesToScan = getSourceFiles(localPath, 15);
         
         if (filesToScan.length === 0) {
             return res.status(404).json({ error: 'No scannable source files found in repository.' });
         }
 
-        console.log(`[Node.js] Scanning ${filesToScan.length} files from ${localPath}`);
+        console.log(`[Node.js] Building full-repo payload from ${filesToScan.length} files...`);
 
-        let totalRiskScore = 0;
-        let allBugs = [];
-        let allFixes = [];
+        // 2. Concatenate ALL files into ONE big context string (up to 30k chars handled by Flask)
+        const repoCode = filesToScan.map(f => 
+            `// ===== FILE: ${f.fileName} =====\n${f.code}`
+        ).join('\n\n');
 
-        // 2. Iterate each file and ask the AIML Engine to find bugs
-        // In a real app we might do `Promise.all` but to avoid rate limits, we'll process sequentially
-        for (const fileObj of filesToScan) {
-            console.log(`[Node.js] Forwarding ${fileObj.fileName} to Flask Microservice...`);
-            
-            try {
-                const flaskResponse = await fetch('http://127.0.0.1:8000/analyze_code', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ codeSnippet: fileObj.code })
-                });
+        // 3. Single call to the new AI endpoint — full context, one response
+        console.log('[Node.js] Sending full-repo context to /analyze_full_repo...');
+        const flaskResponse = await fetch('http://127.0.0.1:8000/analyze_full_repo', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repoCode, repoUrl })
+        });
 
-                if (flaskResponse.ok) {
-                    const flaskData = await flaskResponse.json();
-                    
-                    totalRiskScore += flaskData.riskScore;
-                    
-                    // Attach the filename to each bug so the frontend knows where it came from
-                    const mappedBugs = (flaskData.detectedBugs || []).map(bug => ({
-                        ...bug,
-                        description: `[${fileObj.fileName}] ${bug.description}`
-                    }));
-                    
-                    allBugs = [...allBugs, ...mappedBugs];
-                    allFixes = [...allFixes, ...(flaskData.aiSuggestedFixes || [])];
-                }
-            } catch (err) {
-                console.error(`[Node.js] Error analyzing ${fileObj.fileName}:`, err.message);
-            }
+        if (!flaskResponse.ok) {
+            const errText = await flaskResponse.text();
+            throw new Error(`Flask error: ${errText}`);
         }
 
-        // 3. Average the risk score
-        const averageRiskScore = filesToScan.length > 0 ? (totalRiskScore / filesToScan.length) : 0;
+        const result = await flaskResponse.json();
 
-        // 4. Save to MongoDB
+        const allBugs = result.detectedBugs || [];
+        const allFixes = result.aiSuggestedFixes || [];
+        // Estimate risk: 10% per bug found, capped at 100%
+        const riskScore = Math.min(allBugs.length * 10, 100);
+
+        // 4. Save to MongoDB ScanRecord
         const newRecord = await ScanRecord.create({
-            fileName: repoUrl || localPath, // Use the repo URL or path to identify this scan
-            codeSnippet: `Deep Scan of ${filesToScan.length} files.`,
-            riskScore: averageRiskScore,
+            fileName: repoUrl || localPath,
+            codeSnippet: `Full-repo scan of ${filesToScan.length} files.`,
+            riskScore,
             detectedBugs: allBugs,
             aiSuggestedFixes: allFixes
         });
 
-        console.log(`[Node.js] Repository Deep Scan complete. Saved to database. Returning to client.`);
-
+        console.log('[Node.js] Full-repo scan complete. Saved to database.');
         return res.status(200).json({
             message: 'Repository Bug Scan Complete',
             recordId: newRecord._id,
-            riskScore: averageRiskScore,
+            riskScore,
             detectedBugs: allBugs,
             aiSuggestedFixes: allFixes,
-            filesAnalyzed: filesToScan.length
+            filesAnalyzed: filesToScan.length,
+            aiSummary: {
+                projectExplanation: result.projectExplanation,
+                mainModules: result.mainModules
+            }
         });
 
     } catch (error) {
